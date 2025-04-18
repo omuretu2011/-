@@ -1,0 +1,305 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <title>掲示板 v2.3 拡張</title>
+  <style>
+    body {
+      font-family: sans-serif;
+      background: #f0f0f0;
+      margin: 0;
+      padding: 20px;
+    }
+    .dark-mode {
+      background: #000 !important;
+      color: #fff;
+    }
+    input, textarea, button, select {
+      font-size: 16px;
+      padding: 8px;
+      margin: 5px 0;
+      width: 100%;
+      box-sizing: border-box;
+    }
+    .room, .post {
+      background: white;
+      padding: 10px;
+      margin: 10px 0;
+      border-left: 5px solid #007BFF;
+    }
+    .dark-mode .room, .dark-mode .post {
+      background: #2e2e2e;
+      color: #fff;
+    }
+    .reply-block {
+      background: #f9f9f9;
+      padding: 6px;
+      margin-bottom: 5px;
+      border-left: 3px solid #ccc;
+      font-style: italic;
+      color: #555;
+    }
+    .dark-mode .reply-block {
+      background: #333;
+      color: #ccc;
+      border-color: #555;
+    }
+    img.preview {
+      max-width: 200px;
+      margin-top: 5px;
+      display: block;
+    }
+    .post-controls {
+      margin-top: 5px;
+    }
+    .reply-info {
+      font-size: 0.9em;
+      color: gray;
+      background: #eee;
+      padding: 5px;
+      margin-bottom: 5px;
+    }
+    .dark-mode .reply-info {
+      background: #444;
+      color: #ccc;
+    }
+    #deviceButtons button {
+      margin-right: 10px;
+    }
+  </style>
+</head>
+<body>
+
+<h1>掲示板</h1>
+<div id="deviceButtons">
+  <button onclick="toggleDarkMode()">🌗 ダークモード</button>
+  <button onclick="setDeviceMode('pc')">💻 PCモード</button>
+  <button onclick="setDeviceMode('mobile')">📱 スマホモード</button>
+</div>
+
+<div id="roomView">
+  <h2>ルーム一覧</h2>
+  <div id="roomList"></div>
+
+  <h3>ルーム作成</h3>
+  <input type="text" id="newRoomName" placeholder="ルーム名">
+  <input type="password" id="newRoomPass" placeholder="パスワード（任意）">
+  <button onclick="createRoom()">作成</button>
+</div>
+
+<div id="bbsView" style="display:none">
+  <button onclick="backToRooms()">← 戻る</button>
+  <h2 id="roomTitle"></h2>
+
+  <div id="posts"></div>
+
+  <h3>📝 メッセージ投稿</h3>
+  <div id="replyInfo" class="reply-info" style="display:none"></div>
+  <input type="text" id="name" placeholder="名前">
+  <textarea id="message" placeholder="メッセージ" rows="3"></textarea>
+  <input type="file" id="imageInput" accept="image/*">
+  <img id="imagePreview" class="preview" style="display:none">
+  <button onclick="submitPost()">送信</button>
+</div>
+
+<script>
+  const roomKey = 'bbs-rooms-v3';
+  const postPrefix = 'bbs-posts-';
+  const imageLimit = 1024 * 1024;
+  let currentRoom = '';
+  let currentUser = '';
+  let roomCreator = '';
+  let replyToId = null;
+
+  function escape(str) {
+    return str.replace(/[&<>"']/g, m => ({
+      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;'
+    }[m]));
+  }
+
+  function loadRooms() {
+    const data = JSON.parse(localStorage.getItem(roomKey) || '[]');
+    const list = document.getElementById('roomList');
+    list.innerHTML = '';
+    data.forEach(room => {
+      const div = document.createElement('div');
+      div.className = 'room';
+      div.innerHTML = `<strong>${escape(room.name)}</strong><br><small>作成者: ${escape(room.creator)}</small><br>`;
+      const btn = document.createElement('button');
+      btn.textContent = '入室';
+      btn.onclick = () => enterRoomPrompt(room.name);
+      div.appendChild(btn);
+      if (room.creator === currentUser && currentUser !== '') {
+        const delBtn = document.createElement('button');
+        delBtn.textContent = '🗑 ルーム削除';
+        delBtn.onclick = () => deleteRoom(room.name);
+        delBtn.style.marginLeft = '10px';
+        div.appendChild(delBtn);
+      }
+      list.appendChild(div);
+    });
+  }
+
+  function createRoom() {
+    const name = document.getElementById('newRoomName').value.trim();
+    const pass = document.getElementById('newRoomPass').value.trim();
+    const creator = prompt("あなたの名前（作成者）を入力してください：") || "匿名";
+    currentUser = creator;
+    if (!name) return alert("ルーム名を入力してください");
+    let data = JSON.parse(localStorage.getItem(roomKey) || '[]');
+    if (data.find(r => r.name === name)) return alert("すでに存在するルーム名です");
+    data.push({ name, pass, creator });
+    localStorage.setItem(roomKey, JSON.stringify(data));
+    document.getElementById('newRoomName').value = '';
+    document.getElementById('newRoomPass').value = '';
+    loadRooms();
+  }
+
+  function deleteRoom(name) {
+    if (!confirm("このルームとすべての投稿を削除しますか？")) return;
+    let rooms = JSON.parse(localStorage.getItem(roomKey) || '[]');
+    rooms = rooms.filter(r => r.name !== name);
+    localStorage.setItem(roomKey, JSON.stringify(rooms));
+    localStorage.removeItem(postPrefix + name);
+    loadRooms();
+  }
+
+  function enterRoomPrompt(name) {
+    const data = JSON.parse(localStorage.getItem(roomKey));
+    const room = data.find(r => r.name === name);
+    if (room.pass) {
+      const pass = prompt("パスワードを入力してください：");
+      if (pass !== room.pass) return alert("パスワードが違います");
+    }
+    currentRoom = name;
+    currentUser = prompt("あなたの名前を入力してください：") || "匿名";
+    roomCreator = room.creator;
+    document.getElementById('roomView').style.display = 'none';
+    document.getElementById('bbsView').style.display = 'block';
+    document.getElementById('roomTitle').textContent = `ルーム: ${name}`;
+    loadPosts();
+  }
+
+  function backToRooms() {
+    currentRoom = '';
+    currentUser = '';
+    replyToId = null;
+    document.getElementById('roomView').style.display = 'block';
+    document.getElementById('bbsView').style.display = 'none';
+    document.getElementById('replyInfo').style.display = 'none';
+    loadRooms();
+  }
+
+  function replyToPost(postId) {
+    const posts = JSON.parse(localStorage.getItem(postPrefix + currentRoom) || '[]');
+    const post = posts.find(p => p.id === postId);
+    if (post) {
+      replyToId = postId;
+      const info = document.getElementById('replyInfo');
+      info.innerHTML = `<strong>返信先:</strong> ${escape(post.name)}「${escape(post.message.slice(0, 50))}」`;
+      info.style.display = 'block';
+    }
+  }
+
+  function submitPost() {
+    const name = document.getElementById('name').value.trim() || '匿名';
+    const msg = document.getElementById('message').value.trim();
+    if (!msg) return alert("メッセージを入力してください");
+    const file = document.getElementById('imageInput').files[0];
+    const post = {
+      id: Date.now(),
+      name,
+      message: msg,
+      date: new Date().toLocaleString(),
+      user: currentUser,
+      image: '',
+      replyTo: replyToId
+    };
+    replyToId = null;
+    document.getElementById('replyInfo').style.display = 'none';
+
+    if (file) {
+      if (file.size > imageLimit) return alert("画像サイズは1MB以内にしてください");
+      const reader = new FileReader();
+      reader.onload = e => {
+        post.image = e.target.result;
+        savePost(post);
+      };
+      reader.readAsDataURL(file);
+    } else {
+      savePost(post);
+    }
+  }
+
+  function savePost(post) {
+    const key = postPrefix + currentRoom;
+    const posts = JSON.parse(localStorage.getItem(key) || '[]');
+    posts.push(post);
+    localStorage.setItem(key, JSON.stringify(posts));
+    document.getElementById('message').value = '';
+    document.getElementById('imageInput').value = '';
+    document.getElementById('imagePreview').style.display = 'none';
+    addPostToDOM(post);
+  }
+
+  function loadPosts() {
+    const key = postPrefix + currentRoom;
+    const posts = JSON.parse(localStorage.getItem(key) || '[]');
+    const container = document.getElementById('posts');
+    container.innerHTML = '';
+    posts.forEach(post => addPostToDOM(post));
+  }
+
+  function addPostToDOM(post) {
+    const container = document.getElementById('posts');
+    const div = document.createElement('div');
+    div.className = 'post';
+    if (post.replyTo) {
+      const ref = JSON.parse(localStorage.getItem(postPrefix + currentRoom) || '[]').find(p => p.id === post.replyTo);
+      if (ref) {
+        const reply = document.createElement('div');
+        reply.className = 'reply-block';
+        reply.innerHTML = `<strong>返信先:</strong> ${escape(ref.name)}「${escape(ref.message.slice(0, 50))}」`;
+        div.appendChild(reply);
+      }
+    }
+    div.innerHTML += `<strong>${escape(post.name)}</strong>：${escape(post.message)}<br><small>${post.date}</small>`;
+    if (post.image) {
+      const img = document.createElement('img');
+      img.src = post.image;
+      img.className = 'preview';
+      div.appendChild(img);
+    }
+    const replyBtn = document.createElement('button');
+    replyBtn.textContent = '↩ 返信';
+    replyBtn.onclick = () => replyToPost(post.id);
+    div.appendChild(replyBtn);
+    container.appendChild(div);
+  }
+
+  function toggleDarkMode() {
+    document.body.classList.toggle('dark-mode');
+  }
+
+  function setDeviceMode(mode) {
+    document.body.style.maxWidth = mode === 'mobile' ? '480px' : '';
+    document.body.style.margin = mode === 'mobile' ? '0 auto' : '';
+  }
+
+  document.getElementById('imageInput').addEventListener('change', e => {
+    const file = e.target.files[0];
+    if (file && file.size <= imageLimit) {
+      const reader = new FileReader();
+      reader.onload = ev => {
+        const img = document.getElementById('imagePreview');
+        img.src = ev.target.result;
+        img.style.display = 'block';
+      };
+      reader.readAsDataURL(file);
+    }
+  });
+
+  window.onload = loadRooms;
+</script>
+</body>
+</html>
